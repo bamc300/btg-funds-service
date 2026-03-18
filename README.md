@@ -15,7 +15,7 @@ Estructura basada en hexagonal:
 
 Ver [no-sql-model.md](docs/no-sql-model.md).
 
-## Consultas SQL
+## Consultas SQL PUNTO 2
 
 Consulta solicitada para la BD `BTG`: [consulta.md](docs/consulta.md).
 
@@ -51,7 +51,7 @@ Valores por defecto:
 
 Requisitos:
 
-- JDK 23
+- Java 25
 - Maven
 
 Ejecutar:
@@ -79,4 +79,4 @@ Swagger (ejemplo en ALB):
 
 ## Notificaciones (Email/SMS)
 
-En este proyecto, el envío está implementado por puerto y, por defecto, usa un adaptador en memoria (no realiza llamadas externas).
+En este proyecto, el envío está implementado por puerto y, por defecto, usa un adaptador en memoria (no realiza llamadas externas), usando el uso de smtp , no se utilizo ses por que no se manejo dominio para implementar envios de correo por alli.
