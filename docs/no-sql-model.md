@@ -1,17 +1,10 @@
-# Modelo de datos NoSQL
+# Modelo de datos NoSQL (seleccionado)
 
-El sistema necesita:
+## DynamoDB (single-table)
 
-- Clientes con saldo y preferencia de notificación
-- Catálogo de fondos (estático)
-- Suscripciones activas/canceladas
-- Historial de transacciones (aperturas y cancelaciones)
+Tabla: `btg-funds-<env>`
 
-## Opción A: DynamoDB (single-table)
-
-Tabla: `btg-funds`
-
-Particiones por cliente para lecturas eficientes (suscripciones y transacciones).
+La tabla se particiona por cliente para lecturas eficientes de suscripciones y transacciones.
 
 ### Tipos de ítems
 
@@ -19,36 +12,25 @@ Particiones por cliente para lecturas eficientes (suscripciones y transacciones)
 
 - `PK = CLIENT#<clientId>`
 - `SK = PROFILE`
-- Atributos: `balanceCop`, `notificationPreference`, `email`, `phone`
+- Atributos: `clientId`, `balanceCop`, `notificationPreference`, `email`, `phone`
 
 2) Suscripción
 
 - `PK = CLIENT#<clientId>`
 - `SK = SUBSCRIPTION#<subscriptionId>`
-- Atributos: `fundId`, `amountCop`, `status`, `createdAt`, `cancelledAt`
+- Atributos: `subscriptionId`, `clientId`, `fundId`, `amountCop`, `status`, `createdAt`, `cancelledAt`
 
 3) Transacción (histórico)
 
 - `PK = CLIENT#<clientId>`
 - `SK = TX#<occurredAtISO>#<transactionId>`
-- Atributos: `fundId`, `type`, `amountCop`, `subscriptionId`
-
-4) Fondos (catálogo)
-
-- `PK = FUND`
-- `SK = <fundId>`
-- Atributos: `name`, `minimumAmountCop`, `category`
+- Atributos: `txId`, `clientId`, `fundId`, `txType`, `amountCop`, `subscriptionId`, `occurredAt`
 
 ### Consultas típicas
 
-- Suscripciones activas del cliente: `PK=CLIENT#id` y filtrar `SK` por `SUBSCRIPTION#` + `status=ACTIVE`
-- Historial: `PK=CLIENT#id` y filtrar `SK` por `TX#` (ordenable por fecha)
-- Fondo por id: `PK=FUND` y `SK=<fundId>`
+- Suscripciones activas del cliente: `PK=CLIENT#<id>` y `begins_with(SK, 'SUBSCRIPTION#')`, filtrando `status=ACTIVE`
+- Historial del cliente: `PK=CLIENT#<id>` y `begins_with(SK, 'TX#')` (ordenable por fecha por el prefijo ISO en `SK`)
 
-## Opción B: MongoDB (colecciones)
+### Catálogo de fondos
 
-- `clients` (1 documento por cliente)
-- `funds` (1 documento por fondo)
-- `subscriptions` (1 documento por suscripción)
-- `transactions` (append-only)
-
+El catálogo de fondos es estático y se resuelve en la aplicación (no se persiste en DynamoDB).
