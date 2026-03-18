@@ -1,0 +1,24 @@
+spring:
+  application:
+    name: funds-service
+
+btg:
+  initial-balance-cop: 500000
+  security:
+    username: btg
+    password: btg
+  persistence:
+    type: INMEMORY
+    dynamodb:
+      table-name: btg-funds
+  notifications:
+    mode: INMEMORY
+    ses:
+      from-email:
+    smtp:
+      host:
+      port:
+      username:
+      password:
+      auth: true
+      starttls: true

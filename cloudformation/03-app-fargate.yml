@@ -1,0 +1,307 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: BTG Funds Service - ECS Fargate + CloudWatch Logs (optional ALB)
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+  ContainerImage:
+    Type: String
+  ContainerPort:
+    Type: Number
+    Default: 8080
+  DesiredCount:
+    Type: Number
+    Default: 1
+  Cpu:
+    Type: Number
+    Default: 256
+  Memory:
+    Type: Number
+    Default: 512
+
+  ExposeWithAlb:
+    Type: String
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
+
+  BtgUsername:
+    Type: String
+    Default: btg
+  BasicAuthPasswordSsmParamName:
+    Type: String
+    Default: ""
+
+  PersistenceType:
+    Type: String
+    Default: DYNAMODB
+    AllowedValues:
+      - INMEMORY
+      - DYNAMODB
+
+  NotificationsMode:
+    Type: String
+    Default: SMTP
+    AllowedValues:
+      - INMEMORY
+      - SES
+      - SMTP
+  SmtpHost:
+    Type: String
+    Default: ""
+  SmtpPort:
+    Type: Number
+    Default: 587
+  SmtpUsername:
+    Type: String
+    Default: ""
+  SmtpPasswordSsmParamName:
+    Type: String
+    Default: ""
+  SesFromEmail:
+    Type: String
+    Default: ""
+
+Conditions:
+  UseAlb: !Equals [!Ref ExposeWithAlb, "true"]
+  UseSmtp: !Equals [!Ref NotificationsMode, "SMTP"]
+  NoAlb: !Not [!Condition UseAlb]
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /btg/funds-service/${EnvironmentName}
+      RetentionInDays: 7
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub btg-funds-${EnvironmentName}
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: FundsServiceSecretsAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${BasicAuthPasswordSsmParamName}
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SmtpPasswordSsmParamName}
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: "*"
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FundsServiceRuntimeAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - !ImportValue
+                    Fn::Sub: btg-funds-${EnvironmentName}-DynamoTableArn
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: UseAlb
+    Properties:
+      GroupDescription: Funds ALB SG
+      VpcId: !ImportValue
+        Fn::Sub: btg-funds-${EnvironmentName}-VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Funds service SG
+      VpcId: !ImportValue
+        Fn::Sub: btg-funds-${EnvironmentName}-VpcId
+      SecurityGroupIngress:
+        - !If
+          - UseAlb
+          - IpProtocol: tcp
+            FromPort: !Ref ContainerPort
+            ToPort: !Ref ContainerPort
+            SourceSecurityGroupId: !Ref AlbSecurityGroup
+          - IpProtocol: tcp
+            FromPort: !Ref ContainerPort
+            ToPort: !Ref ContainerPort
+            CidrIp: 0.0.0.0/0
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Condition: UseAlb
+    Properties:
+      Scheme: internet-facing
+      Subnets:
+        - !ImportValue
+          Fn::Sub: btg-funds-${EnvironmentName}-PublicSubnet1Id
+        - !ImportValue
+          Fn::Sub: btg-funds-${EnvironmentName}-PublicSubnet2Id
+      SecurityGroups:
+        - !Ref AlbSecurityGroup
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: UseAlb
+    Properties:
+      TargetType: ip
+      VpcId: !ImportValue
+        Fn::Sub: btg-funds-${EnvironmentName}-VpcId
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      HealthCheckPath: /actuator/health
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: UseAlb
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub btg-funds-${EnvironmentName}
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      NetworkMode: awsvpc
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: funds-service
+          Image: !Ref ContainerImage
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+          Environment:
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: BTG_SECURITY_USERNAME
+              Value: !Ref BtgUsername
+            - Name: BTG_PERSISTENCE_TYPE
+              Value: !Ref PersistenceType
+            - Name: BTG_PERSISTENCE_DYNAMODB_TABLE_NAME
+              Value: !ImportValue
+                Fn::Sub: btg-funds-${EnvironmentName}-DynamoTableName
+            - Name: BTG_NOTIFICATIONS_MODE
+              Value: !Ref NotificationsMode
+            - Name: BTG_NOTIFICATIONS_SES_FROM_EMAIL
+              Value: !Ref SesFromEmail
+            - Name: BTG_NOTIFICATIONS_SMTP_HOST
+              Value: !Ref SmtpHost
+            - Name: BTG_NOTIFICATIONS_SMTP_PORT
+              Value: !Ref SmtpPort
+            - Name: BTG_NOTIFICATIONS_SMTP_USERNAME
+              Value: !Ref SmtpUsername
+          Secrets:
+            - Name: BTG_SECURITY_PASSWORD
+              ValueFrom: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${BasicAuthPasswordSsmParamName}
+            - !If
+              - UseSmtp
+              - Name: BTG_NOTIFICATIONS_SMTP_PASSWORD
+                ValueFrom: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SmtpPasswordSsmParamName}
+              - !Ref AWS::NoValue
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  Service:
+    Type: AWS::ECS::Service
+    Condition: NoAlb
+    Properties:
+      Cluster: !Ref Cluster
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      TaskDefinition: !Ref TaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !ImportValue
+              Fn::Sub: btg-funds-${EnvironmentName}-PublicSubnet1Id
+            - !ImportValue
+              Fn::Sub: btg-funds-${EnvironmentName}-PublicSubnet2Id
+          SecurityGroups:
+            - !Ref ServiceSecurityGroup
+
+  ServiceAlb:
+    Type: AWS::ECS::Service
+    Condition: UseAlb
+    DependsOn:
+      - Listener
+    Properties:
+      Cluster: !Ref Cluster
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      TaskDefinition: !Ref TaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !ImportValue
+              Fn::Sub: btg-funds-${EnvironmentName}-PublicSubnet1Id
+            - !ImportValue
+              Fn::Sub: btg-funds-${EnvironmentName}-PublicSubnet2Id
+          SecurityGroups:
+            - !Ref ServiceSecurityGroup
+      LoadBalancers:
+        - ContainerName: funds-service
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+
+Outputs:
+  ClusterName:
+    Value: !Ref Cluster
+  ServiceName:
+    Value: !If [UseAlb, !Ref ServiceAlb, !Ref Service]
+  LogGroupName:
+    Value: !Ref LogGroup
+  AlbDnsName:
+    Condition: UseAlb
+    Value: !GetAtt LoadBalancer.DNSName

@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: BTG Funds Service - DynamoDB (single-table)
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+  TableName:
+    Type: String
+    Default: btg-funds
+  BillingMode:
+    Type: String
+    Default: PROVISIONED
+    AllowedValues:
+      - PROVISIONED
+      - PAY_PER_REQUEST
+  ReadCapacityUnits:
+    Type: Number
+    Default: 1
+  WriteCapacityUnits:
+    Type: Number
+    Default: 1
+
+Conditions:
+  IsProvisioned: !Equals [!Ref BillingMode, PROVISIONED]
+
+Resources:
+  FundsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${TableName}-${EnvironmentName}
+      BillingMode: !Ref BillingMode
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      ProvisionedThroughput: !If
+        - IsProvisioned
+        - ReadCapacityUnits: !Ref ReadCapacityUnits
+          WriteCapacityUnits: !Ref WriteCapacityUnits
+        - !Ref AWS::NoValue
+      SSESpecification:
+        SSEEnabled: true
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: false
+
+Outputs:
+  DynamoTableName:
+    Value: !Ref FundsTable
+    Export:
+      Name: !Sub btg-funds-${EnvironmentName}-DynamoTableName
+  DynamoTableArn:
+    Value: !GetAtt FundsTable.Arn
+    Export:
+      Name: !Sub btg-funds-${EnvironmentName}-DynamoTableArn
